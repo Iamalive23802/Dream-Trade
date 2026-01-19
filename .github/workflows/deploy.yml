@@ -1,0 +1,92 @@
+name: Deploy to server
+
+on:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "${{ secrets.SSH_PORT }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy (git pull + install + build + restart)
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+          FRONTEND_DIST_DIR: ${{ secrets.FRONTEND_DIST_DIR }}
+          BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
+          SYSTEMD_SERVICE: ${{ secrets.SYSTEMD_SERVICE }}
+          PM2_PROCESS_NAME: ${{ secrets.PM2_PROCESS_NAME }}
+        run: |
+          set -euo pipefail
+
+          ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" \
+            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR}' BACKEND_PORT='${BACKEND_PORT}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          if [ -z "${APP_DIR:-}" ]; then
+            echo "APP_DIR is required (path where repo is cloned on the server)"
+            exit 1
+          fi
+
+          cd "${APP_DIR}"
+          git fetch --all --prune
+          git reset --hard origin/main
+
+          echo "Installing backend deps..."
+          cd backend
+          if [ -f package-lock.json ]; then
+            npm ci --omit=dev
+          else
+            npm install --omit=dev
+          fi
+
+          echo "Restarting backend..."
+          if command -v pm2 >/dev/null 2>&1; then
+            NAME="${PM2_PROCESS_NAME:-dreamtrade-backend}"
+            pm2 restart "${NAME}" || pm2 start server.js --name "${NAME}"
+          elif [ -n "${SYSTEMD_SERVICE:-}" ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl restart "${SYSTEMD_SERVICE}"
+          else
+            PORT="${BACKEND_PORT:-5050}"
+            (command -v fuser >/dev/null 2>&1 && fuser -k "${PORT}/tcp") || true
+            nohup npm run start > ~/dreamtrade-backend.log 2>&1 &
+          fi
+
+          echo "Building frontend..."
+          cd ../frontend
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npm run build
+
+          if [ -n "${FRONTEND_DIST_DIR:-}" ]; then
+            echo "Syncing frontend dist -> ${FRONTEND_DIST_DIR}"
+            mkdir -p "${FRONTEND_DIST_DIR}"
+            rsync -a --delete dist/ "${FRONTEND_DIST_DIR}/"
+          else
+            echo "FRONTEND_DIST_DIR not set; skipping rsync of frontend dist."
+          fi
+
+          echo "Deploy complete."
+          EOF

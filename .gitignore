@@ -1,6 +1,6 @@
 # Dependencies
 node_modules/
-package-lock.json
+# Note: keep lockfiles committed for reproducible installs (CI/CD).
 
 # Build outputs
 dist/
