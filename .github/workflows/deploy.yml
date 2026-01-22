@@ -11,6 +11,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,19 +20,38 @@ jobs:
         shell: bash
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+
+          if [ -z "${SSH_HOST:-}" ]; then
+            echo "Missing required secret: SSH_HOST"
+            exit 1
+          fi
+
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "Missing required secret: SSH_PRIVATE_KEY"
+            exit 1
+          fi
+
+          PORT="${SSH_PORT:-22}"
+
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+          # Write private key (multiline-safe)
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p "${SSH_PORT}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts
+
+          # Avoid "Host key verification failed"
+          ssh-keyscan -p "${PORT}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts
 
       - name: Deploy (git pull + install + build + restart)
         shell: bash
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USER: ${{ secrets.SSH_USER }}
           APP_DIR: ${{ secrets.APP_DIR }}
           FRONTEND_DIST_DIR: ${{ secrets.FRONTEND_DIST_DIR }}
@@ -41,55 +61,115 @@ jobs:
         run: |
           set -euo pipefail
 
-          ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" \
-            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR}' BACKEND_PORT='${BACKEND_PORT}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME}' bash -s" <<'EOF'
-          set -euo pipefail
+          HOST="${SSH_HOST}"
+          PORT="${SSH_PORT:-22}"
+          USER="${SSH_USER:-root}"
 
           if [ -z "${APP_DIR:-}" ]; then
-            echo "APP_DIR is required (path where repo is cloned on the server)"
+            echo "Missing required secret: APP_DIR"
             exit 1
           fi
 
+          ssh -p "${PORT}" "${USER}@${HOST}" \
+            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          echo "== Server info =="
+          whoami
+          pwd
+
+          # --- Ensure basics ---
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y git
+          fi
+
+          # Install Node 20 if missing (Ubuntu 24.04)
+          if ! command -v node >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+            echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update -y
+            apt-get install -y nodejs
+          fi
+
+          if ! command -v rsync >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y rsync
+          fi
+
+          if ! command -v pm2 >/dev/null 2>&1; then
+            npm i -g pm2 || true
+          fi
+
+          echo "Node: $(node -v || true)"
+          echo "NPM:  $(npm -v || true)"
+
+          # --- Code sync ---
+          mkdir -p "${APP_DIR}"
           cd "${APP_DIR}"
+
+          if [ ! -d ".git" ]; then
+            echo "Initial clone..."
+            git clone https://github.com/lamalive23802/Dream-Trade.git .
+          fi
+
+          echo "Updating code..."
           git fetch --all --prune
           git reset --hard origin/main
 
-          echo "Installing backend deps..."
-          cd backend
-          if [ -f package-lock.json ]; then
-            npm ci --omit=dev
-          else
-            npm install --omit=dev
+          # --- Backend ---
+          if [ -d "backend" ]; then
+            echo "Installing backend deps..."
+            cd backend
+
+            if [ -f package-lock.json ]; then
+              npm ci --omit=dev
+            else
+              npm install --omit=dev
+            fi
+
+            echo "Restarting backend..."
+            if command -v pm2 >/dev/null 2>&1; then
+              NAME="${PM2_PROCESS_NAME:-dreamtrade-backend}"
+              pm2 restart "${NAME}" || pm2 start server.js --name "${NAME}"
+              pm2 save || true
+            elif [ -n "${SYSTEMD_SERVICE:-}" ] && command -v systemctl >/dev/null 2>&1; then
+              systemctl restart "${SYSTEMD_SERVICE}"
+            else
+              PORT="${BACKEND_PORT:-5050}"
+              (command -v fuser >/dev/null 2>&1 && fuser -k "${PORT}/tcp") || true
+              nohup npm run start > ~/dreamtrade-backend.log 2>&1 &
+            fi
+
+            cd "${APP_DIR}"
           fi
 
-          echo "Restarting backend..."
-          if command -v pm2 >/dev/null 2>&1; then
-            NAME="${PM2_PROCESS_NAME:-dreamtrade-backend}"
-            pm2 restart "${NAME}" || pm2 start server.js --name "${NAME}"
-          elif [ -n "${SYSTEMD_SERVICE:-}" ] && command -v systemctl >/dev/null 2>&1; then
-            systemctl restart "${SYSTEMD_SERVICE}"
-          else
-            PORT="${BACKEND_PORT:-5050}"
-            (command -v fuser >/dev/null 2>&1 && fuser -k "${PORT}/tcp") || true
-            nohup npm run start > ~/dreamtrade-backend.log 2>&1 &
+          # --- Frontend ---
+          if [ -d "frontend" ]; then
+            echo "Building frontend..."
+            cd frontend
+
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+
+            npm run build
+
+            if [ -n "${FRONTEND_DIST_DIR:-}" ]; then
+              echo "Syncing frontend dist -> ${FRONTEND_DIST_DIR}"
+              mkdir -p "${FRONTEND_DIST_DIR}"
+              rsync -a --delete dist/ "${FRONTEND_DIST_DIR}/"
+            else
+              echo "FRONTEND_DIST_DIR not set; skipping rsync."
+            fi
+
+            cd "${APP_DIR}"
           fi
 
-          echo "Building frontend..."
-          cd ../frontend
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-          npm run build
-
-          if [ -n "${FRONTEND_DIST_DIR:-}" ]; then
-            echo "Syncing frontend dist -> ${FRONTEND_DIST_DIR}"
-            mkdir -p "${FRONTEND_DIST_DIR}"
-            rsync -a --delete dist/ "${FRONTEND_DIST_DIR}/"
-          else
-            echo "FRONTEND_DIST_DIR not set; skipping rsync of frontend dist."
-          fi
-
-          echo "Deploy complete."
+          echo "✅ Deploy complete."
           EOF
