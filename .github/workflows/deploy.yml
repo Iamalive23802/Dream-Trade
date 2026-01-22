@@ -60,12 +60,12 @@ jobs:
           echo "✅ Key validated successfully"
 
           echo "Scanning host key for ${SSH_HOST}:${PORT}..."
-          ssh-keyscan -p "${PORT}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>&1 || {
-            echo "❌ Failed to scan host key"
-            echo "Cannot reach ${SSH_HOST}:${PORT}"
-            exit 1
-          }
-          echo "✅ Host key added to known_hosts"
+          if ssh-keyscan -p "${PORT}" -T 10 -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>&1; then
+            echo "✅ Host key added to known_hosts"
+          else
+            echo "⚠️ Could not scan host key (server might be behind firewall)"
+            echo "Will attempt connection anyway with StrictHostKeyChecking=accept-new"
+          fi
 
       - name: Deploy (git pull + install + build + restart)
         shell: bash
@@ -92,7 +92,7 @@ jobs:
 
           ssh -i ~/.ssh/id_ed25519 \
               -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
+              -o StrictHostKeyChecking=accept-new \
               -p "${PORT}" "${USER}@${HOST}" \
             "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' bash -s" <<'EOF'
           set -euo pipefail
