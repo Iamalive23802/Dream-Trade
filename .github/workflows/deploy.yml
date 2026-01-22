@@ -40,8 +40,13 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Decode key safely (avoids newline/CRLF issues completely)
-          echo "$SSH_PRIVATE_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          # Decode key safely (strip all whitespace first to avoid issues)
+          echo "$SSH_PRIVATE_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/id_ed25519 2>/dev/null || {
+            echo "❌ Failed to decode SSH_PRIVATE_KEY_B64"
+            echo "Please ensure the secret contains a valid base64-encoded private key."
+            echo "To create it, run: cat ~/.ssh/id_ed25519 | base64 | tr -d '\n'"
+            exit 1
+          }
           chmod 600 ~/.ssh/id_ed25519
 
           # Optional: validate key parses (will fail here if secret is wrong)
