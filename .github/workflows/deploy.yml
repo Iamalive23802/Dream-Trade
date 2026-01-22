@@ -21,7 +21,7 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
 
@@ -30,8 +30,8 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
-            echo "Missing required secret: SSH_PRIVATE_KEY"
+          if [ -z "${SSH_PRIVATE_KEY_B64:-}" ]; then
+            echo "Missing required secret: SSH_PRIVATE_KEY_B64"
             exit 1
           fi
 
@@ -40,11 +40,14 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Write private key safely (no echo; strip Windows CR)
-          printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          # Decode key safely (avoids newline/CRLF issues completely)
+          echo "$SSH_PRIVATE_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
-          # Avoid "Host key verification failed"
+          # Optional: validate key parses (will fail here if secret is wrong)
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+          # Host key
           ssh-keyscan -p "${PORT}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts
 
       - name: Deploy (git pull + install + build + restart)
@@ -70,7 +73,10 @@ jobs:
             exit 1
           fi
 
-          ssh -p "${PORT}" "${USER}@${HOST}" \
+          ssh -i ~/.ssh/id_ed25519 \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -p "${PORT}" "${USER}@${HOST}" \
             "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' bash -s" <<'EOF'
           set -euo pipefail
 
@@ -78,13 +84,11 @@ jobs:
           whoami
           pwd
 
-          # --- Ensure basics ---
           if ! command -v git >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y git
           fi
 
-          # Install Node 20 if missing (Ubuntu 24.04)
           if ! command -v node >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y ca-certificates curl gnupg
@@ -107,7 +111,6 @@ jobs:
           echo "Node: $(node -v || true)"
           echo "NPM:  $(npm -v || true)"
 
-          # --- Code sync ---
           mkdir -p "${APP_DIR}"
           cd "${APP_DIR}"
 
@@ -120,7 +123,6 @@ jobs:
           git fetch --all --prune
           git reset --hard origin/main
 
-          # --- Backend ---
           if [ -d "backend" ]; then
             echo "Installing backend deps..."
             cd backend
@@ -147,7 +149,6 @@ jobs:
             cd "${APP_DIR}"
           fi
 
-          # --- Frontend ---
           if [ -d "frontend" ]; then
             echo "Building frontend..."
             cd frontend
