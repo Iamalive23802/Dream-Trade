@@ -40,8 +40,8 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Write private key (multiline-safe)
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          # Write private key safely (no echo; strip Windows CR)
+          printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
           # Avoid "Host key verification failed"
