@@ -78,6 +78,7 @@ jobs:
           BACKEND_PORT: ${{ secrets.BACKEND_PORT }}
           SYSTEMD_SERVICE: ${{ secrets.SYSTEMD_SERVICE }}
           PM2_PROCESS_NAME: ${{ secrets.PM2_PROCESS_NAME }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -94,7 +95,7 @@ jobs:
               -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=accept-new \
               -p "${PORT}" "${USER}@${HOST}" \
-            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' bash -s" <<'EOF'
+            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' GITHUB_TOKEN='${GITHUB_TOKEN}' bash -s" <<'EOF'
           set -euo pipefail
 
           echo "== Server info =="
@@ -133,10 +134,11 @@ jobs:
 
           if [ ! -d ".git" ]; then
             echo "Initial clone..."
-            git clone https://github.com/lamalive23802/Dream-Trade.git .
+            git clone https://x-access-token:${GITHUB_TOKEN}@github.com/lamalive23802/Dream-Trade.git .
           fi
 
           echo "Updating code..."
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/lamalive23802/Dream-Trade.git
           git fetch --all --prune
           git reset --hard origin/main
 
