@@ -2,7 +2,7 @@ name: Deploy to server
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main"]  # Change to your main branch name if different
 
 concurrency:
   group: deploy-main
@@ -79,6 +79,8 @@ jobs:
           SYSTEMD_SERVICE: ${{ secrets.SYSTEMD_SERVICE }}
           PM2_PROCESS_NAME: ${{ secrets.PM2_PROCESS_NAME }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: YOUR_GITHUB_USERNAME  # CHANGE THIS
+          REPO_NAME: YOUR_REPO_NAME         # CHANGE THIS
         run: |
           set -euo pipefail
 
@@ -94,21 +96,21 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 \
               -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=accept-new \
-              -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=10 \
               -p "${PORT}" "${USER}@${HOST}" \
-            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' GITHUB_TOKEN='${GITHUB_TOKEN}' bash -s" <<'EOF'
+            "APP_DIR='${APP_DIR}' FRONTEND_DIST_DIR='${FRONTEND_DIST_DIR:-}' BACKEND_PORT='${BACKEND_PORT:-}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE:-}' PM2_PROCESS_NAME='${PM2_PROCESS_NAME:-}' GITHUB_TOKEN='${GITHUB_TOKEN}' REPO_OWNER='${REPO_OWNER}' REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
           set -euo pipefail
 
           echo "== Server info =="
           whoami
           pwd
 
+          # Install git if not present
           if ! command -v git >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y git
           fi
 
+          # Install Node.js if not present
           if ! command -v node >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y ca-certificates curl gnupg
@@ -119,11 +121,13 @@ jobs:
             apt-get install -y nodejs
           fi
 
+          # Install rsync if not present
           if ! command -v rsync >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y rsync
           fi
 
+          # Install PM2 if not present
           if ! command -v pm2 >/dev/null 2>&1; then
             npm i -g pm2 || true
           fi
@@ -131,19 +135,24 @@ jobs:
           echo "Node: $(node -v || true)"
           echo "NPM:  $(npm -v || true)"
 
+          # Create app directory
           mkdir -p "${APP_DIR}"
           cd "${APP_DIR}"
 
+          # Clone or update repository
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO_OWNER}/${REPO_NAME}.git"
+
           if [ ! -d ".git" ]; then
             echo "Initial clone..."
-            git clone https://x-access-token:${GITHUB_TOKEN}@github.com/Iamalive23802/Dream-Trade.git .
+            git clone "${REPO_URL}" .
           fi
 
           echo "Updating code..."
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/Iamalive23802/Dream-Trade.git
+          git remote set-url origin "${REPO_URL}"
           git fetch --all --prune
           git reset --hard origin/main
 
+          # Backend deployment
           if [ -d "backend" ]; then
             echo "Installing backend deps..."
             cd backend
@@ -156,20 +165,21 @@ jobs:
 
             echo "Restarting backend..."
             if command -v pm2 >/dev/null 2>&1; then
-              NAME="${PM2_PROCESS_NAME:-dreamtrade-backend}"
+              NAME="${PM2_PROCESS_NAME:-app-backend}"
               pm2 restart "${NAME}" || pm2 start server.js --name "${NAME}"
               pm2 save || true
             elif [ -n "${SYSTEMD_SERVICE:-}" ] && command -v systemctl >/dev/null 2>&1; then
               systemctl restart "${SYSTEMD_SERVICE}"
             else
-              PORT="${BACKEND_PORT:-5050}"
+              PORT="${BACKEND_PORT:-5000}"
               (command -v fuser >/dev/null 2>&1 && fuser -k "${PORT}/tcp") || true
-              nohup npm run start > ~/dreamtrade-backend.log 2>&1 &
+              nohup npm run start > ~/app-backend.log 2>&1 &
             fi
 
             cd "${APP_DIR}"
           fi
 
+          # Frontend deployment
           if [ -d "frontend" ]; then
             echo "Building frontend..."
             cd frontend
