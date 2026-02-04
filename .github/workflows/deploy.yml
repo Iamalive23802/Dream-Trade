@@ -174,13 +174,18 @@ jobs:
             echo "Building frontend..."
             cd frontend
 
+            # Clean npm cache to free memory
+            npm cache clean --force || true
+
+            # Install with memory optimizations
             if [ -f package-lock.json ]; then
-              npm ci
+              NODE_OPTIONS="--max-old-space-size=2048" npm ci --prefer-offline --no-audit
             else
-              npm install
+              NODE_OPTIONS="--max-old-space-size=2048" npm install --prefer-offline --no-audit
             fi
 
-            npm run build
+            # Build with memory limit
+            NODE_OPTIONS="--max-old-space-size=2048" npm run build
 
             if [ -n "${FRONTEND_DIST_DIR:-}" ]; then
               echo "Syncing frontend dist -> ${FRONTEND_DIST_DIR}"
